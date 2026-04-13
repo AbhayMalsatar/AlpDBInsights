@@ -9,6 +9,7 @@ venv/
 *.egg-info/
 .env
 .env.*
+backend/.env
 
 # Backend local data (credentials / caches — do not commit)
 backend/db_registry.json
