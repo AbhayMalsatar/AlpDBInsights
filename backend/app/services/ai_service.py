@@ -3,6 +3,7 @@ import uuid
 import json
 import logging
 import re
+from difflib import get_close_matches
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
@@ -121,6 +122,60 @@ def _validate_sql_tables(sql: str, allowed: set[str]) -> tuple[bool, set[str]]:
         return True, refs
     unknown = {r for r in refs if r not in allowed}
     return len(unknown) == 0, unknown
+
+
+def _extract_alias_table_map(sql: str) -> dict[str, str]:
+    """
+    Build alias->table map from FROM/JOIN clauses.
+    Supports:
+      FROM orders o
+      FROM orders AS o
+      JOIN dbo.orders o
+    """
+    alias_to_table: dict[str, str] = {}
+    for m in re.finditer(r"\b(?:FROM|JOIN)\s+(?:(\w+)\.)?(\w+)(?:\s+(?:AS\s+)?(\w+))?", sql, re.I):
+        table = m.group(2)
+        alias = m.group(3)
+        if table:
+            alias_to_table[table] = table
+        if alias and alias.upper() not in {"ON", "WHERE", "GROUP", "ORDER", "INNER", "LEFT", "RIGHT", "FULL", "JOIN"}:
+            alias_to_table[alias] = table
+    return alias_to_table
+
+
+def _fix_unknown_columns(sql: str, table_columns: dict[str, set[str]]) -> tuple[str, bool]:
+    """
+    Replace alias.column references that don't exist with nearest known column.
+    Returns (updated_sql, changed).
+    """
+    if not sql or not table_columns:
+        return sql, False
+
+    alias_map = _extract_alias_table_map(sql)
+    updated = sql
+    changed = False
+    seen_pairs: set[tuple[str, str]] = set()
+
+    for m in re.finditer(r"\b(\w+)\.(\w+)\b", sql):
+        alias, col = m.group(1), m.group(2)
+        pair = (alias, col)
+        if pair in seen_pairs:
+            continue
+        seen_pairs.add(pair)
+        table = alias_map.get(alias)
+        if not table:
+            continue
+        valid_cols = table_columns.get(table, set())
+        if not valid_cols:
+            continue
+        if col in valid_cols:
+            continue
+        nearest = get_close_matches(col, list(valid_cols), n=1, cutoff=0.72)
+        if nearest:
+            updated = re.sub(rf"\b{re.escape(alias)}\.{re.escape(col)}\b", f"{alias}.{nearest[0]}", updated)
+            changed = True
+            logger.info(f"[chat_v2] Corrected unknown column {alias}.{col} -> {alias}.{nearest[0]}")
+    return updated, changed
 
 
 def _get_full_schema_context(db_config: dict) -> str:
@@ -715,8 +770,13 @@ async def process_chat_v2(request) -> dict:
     sql: str | None = None
     cache_hit = False
     allowed_table_names: Optional[set[str]] = None
+    table_columns: dict[str, set[str]] = {}
     if all_tables_for_validation:
         allowed_table_names = {t.table_name for t in all_tables_for_validation}
+        table_columns = {
+            t.table_name: {c.name for c in t.columns}
+            for t in all_tables_for_validation
+        }
 
     prompt_tokens = query_tokens + _estimate_tokens(schema_context) + 220
 
@@ -742,21 +802,17 @@ async def process_chat_v2(request) -> dict:
                 logger.info(f"[chat_v2] LLM SQL (attempt {attempt + 1}): {raw_sql}")
                 if not raw_sql:
                     break
+                if table_columns:
+                    fixed_sql, changed = _fix_unknown_columns(raw_sql, table_columns)
+                    if changed:
+                        raw_sql = fixed_sql
                 if allowed_table_names:
                     ok, bad = _validate_sql_tables(raw_sql, allowed_table_names)
                     if ok:
                         break
                     logger.warning(f"[chat_v2] SQL referenced unknown tables {bad}, retrying")
-                    hint_tables = (
-                        ", ".join(sorted(retrieval_table_names)[:24])
-                        if retrieval_table_names
-                        else ", ".join(sorted(allowed_table_names)[:32])
-                    )
-                    ctx = (
-                        schema_context
-                        + f"\n\nUse ONLY tables that exist in this database. "
-                        f"Prefer: {hint_tables}. Do not use: {', '.join(sorted(bad))}."
-                    )
+                    # Keep prompt size stable: retry with the original compressed context.
+                    ctx = schema_context
                 else:
                     break
             if raw_sql:
