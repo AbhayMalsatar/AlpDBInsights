@@ -94,6 +94,8 @@ export interface DatabaseConnection {
   tables?: TableInfo[];
   views?: ViewInfo[];
   procedures?: ProcedureInfo[];
+  /** User-selected tables from Databases page popup */
+  selectedTables?: string[];
 }
 
 export interface ChatMessage {

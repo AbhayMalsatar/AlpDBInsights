@@ -126,6 +126,9 @@ export function BuilderChat({ dashboardId, activeTabId }: Props) {
 
   const loading   = stage !== 'idle';
   const activeDb  = databases.find((d) => d.id === activeDatabaseId);
+  const usedTableCount = activeDb
+    ? (activeDb.selectedTables?.length ?? activeDb.tables?.length ?? 0)
+    : 0;
   const dashboard = dashboards.find((d) => d.id === dashboardId);
   const activeTab = dashboard?.tabs.find((t) => t.id === activeTabId);
 
@@ -375,7 +378,7 @@ export function BuilderChat({ dashboardId, activeTabId }: Props) {
           style={{ background: 'hsl(var(--primary-light))', borderBottom: '1px solid hsl(var(--primary-muted))' }}>
           <CheckCircle2 size={10} style={{ color: 'hsl(var(--primary))', flexShrink: 0 }} />
           <span className="text-[10px] truncate" style={{ color: 'hsl(var(--primary))' }}>
-            {activeDb.name} · {activeDb.tables?.length ?? 0} tables · Schema ready
+            {activeDb.name} · {usedTableCount} used tables · Schema ready
           </span>
         </div>
       )}
@@ -523,7 +526,7 @@ function EmptyState({
         </p>
         <p className="text-xs" style={{ color: 'hsl(var(--fg-muted))' }}>
           {activeDb
-            ? `I can query your ${activeDb.tables?.length ?? 0} tables. Ask me anything in plain English!`
+            ? `I can query your ${activeDb.selectedTables?.length ?? activeDb.tables?.length ?? 0} used tables. Ask me anything in plain English!`
             : 'Select a database or ask me to create a chart with sample data.'}
         </p>
       </div>

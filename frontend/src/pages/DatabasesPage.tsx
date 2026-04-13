@@ -1,17 +1,17 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Database, Plus, Trash2, RefreshCw, CheckCircle2, XCircle,
   Loader2, Table2, Server, ShieldCheck, ChevronDown, ChevronRight,
   Key, Link2, Search, Eye, Code2, Rows3, Hash, LayoutList,
-  Sparkles, BarChart2, CheckCheck, AlertCircle, BookMarked, List, ClipboardPaste,
+  Sparkles, BarChart2, CheckCheck, AlertCircle, BookMarked, List, ClipboardPaste, X,
 } from 'lucide-react';
 import { TableHintsModal } from '../components/databases/TableHintsModal';
 import axios from 'axios';
 import { useAppStore } from '../store/useAppStore';
 import type {
   DatabaseConnection, TableInfo, ViewInfo, ProcedureInfo,
-  ChartData, ChartType,
+  ChartType,
 } from '../store/useAppStore';
 
 type DBType = 'postgresql' | 'mssql';
@@ -67,7 +67,9 @@ function ConnectModal({
     port: number;
     database: string;
     username: string;
-  }): DatabaseConnection => ({
+  }): DatabaseConnection => {
+    const tablesFromResponse = (d.tables as TableInfo[]) ?? [];
+    return {
     id:               String(d.db_id ?? d.id ?? ''),
     name:             meta.name,
     type:             meta.type,
@@ -80,10 +82,12 @@ function ConnectModal({
     tablesCount:      (d.tables_count as number)    ?? (Array.isArray(d.tables) ? d.tables.length : 0),
     viewsCount:       (d.views_count as number)     ?? (Array.isArray(d.views) ? d.views.length : 0),
     proceduresCount: (d.procedures_count as number) ?? (Array.isArray(d.procedures) ? d.procedures.length : 0),
-    tables:           (d.tables as TableInfo[])     ?? [],
+    tables:           tablesFromResponse,
     views:            (d.views as ViewInfo[])       ?? [],
     procedures:       (d.procedures as ProcedureInfo[]) ?? [],
-  });
+    selectedTables:   tablesFromResponse.map((t) => t.table_name),
+    };
+  };
 
   const handleConnect = async () => {
     setStatus('connecting');
@@ -288,7 +292,7 @@ function ConnectModal({
 /* ══════════════════════════════════════════════════════════════
    TABLE CARD
 ══════════════════════════════════════════════════════════════ */
-function TableCard({ table }: { table: TableInfo }) {
+function TableCard({ table, used = false }: { table: TableInfo; used?: boolean }) {
   const [open, setOpen] = useState(false);
   const pkCount  = table.columns.filter(c => c.primary_key).length;
   const fkCount  = table.columns.filter(c => c.foreign_key).length;
@@ -309,6 +313,15 @@ function TableCard({ table }: { table: TableInfo }) {
 
         <span className="text-xs font-semibold flex-1 truncate" style={{ color: 'hsl(var(--fg))' }}>
           {table.table_name}
+        </span>
+        <span
+          className="text-[10px] px-1.5 py-0.5 rounded-full"
+          style={{
+            background: used ? 'hsl(var(--success-bg))' : 'hsl(var(--surface-raised))',
+            color: used ? 'hsl(var(--success))' : 'hsl(var(--fg-subtle))',
+          }}
+        >
+          {used ? 'used' : 'unused'}
         </span>
 
         {/* pills */}
@@ -461,17 +474,23 @@ function ProcedureCard({ proc }: { proc: ProcedureInfo }) {
    DB EXPLORER CARD
 ══════════════════════════════════════════════════════════════ */
 type SchemaTab = 'tables' | 'views' | 'procedures';
+type TableUsageFilter = 'used' | 'unused';
 
-function DbExplorerCard({ db, onRemove, onRefresh }: {
+function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
   db: DatabaseConnection;
   onRemove: () => void;
   onRefresh: (schema: { tables: TableInfo[]; views: ViewInfo[]; procedures: ProcedureInfo[] }) => void;
+  onSelectionChange: (selected: string[]) => void;
 }) {
   const [activeTab, setActiveTab]   = useState<SchemaTab>('tables');
   const [search, setSearch]         = useState('');
   const [expanded, setExpanded]     = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [hintsOpen, setHintsOpen]   = useState(false);
+  const [tableUsageFilter, setTableUsageFilter] = useState<TableUsageFilter>('used');
+  const [tablePickerOpen, setTablePickerOpen] = useState(false);
+  const [pickerSearch, setPickerSearch] = useState('');
+  const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
 
   const info = DB_TYPES.find(t => t.value === db.type)!;
 
@@ -487,9 +506,31 @@ function DbExplorerCard({ db, onRemove, onRefresh }: {
     }
   };
 
-  const tables     = (db.tables     ?? []).filter(t => t.table_name.toLowerCase().includes(search.toLowerCase()));
+  const usedTables = new Set(Array.from(selectedTables).map((t) => t.toLowerCase()));
+
+  useEffect(() => {
+    const base = db.selectedTables !== undefined
+      ? db.selectedTables
+      : (db.tables ?? []).map((t) => t.table_name);
+    setSelectedTables(new Set(base));
+  }, [db.id, db.tables?.length, db.selectedTables]);
+
+  const applySelection = (next: Set<string>) => {
+    setSelectedTables(next);
+    onSelectionChange(Array.from(next));
+  };
+
+  const tables = (db.tables ?? [])
+    .filter(t => t.table_name.toLowerCase().includes(search.toLowerCase()))
+    .filter((t) => {
+      const isUsed = usedTables.has(t.table_name.toLowerCase());
+      return tableUsageFilter === 'used' ? isUsed : !isUsed;
+    });
   const views      = (db.views      ?? []).filter(v => v.view_name.toLowerCase().includes(search.toLowerCase()));
   const procedures = (db.procedures ?? []).filter(p => p.name.toLowerCase().includes(search.toLowerCase()));
+
+  const pickerTables = (db.tables ?? [])
+    .filter((t) => t.table_name.toLowerCase().includes(pickerSearch.toLowerCase()));
 
   const tabMeta: { key: SchemaTab; label: string; icon: typeof Table2; count: number }[] = [
     { key: 'tables',     label: 'Tables',     icon: Table2,      count: db.tables?.length     ?? 0 },
@@ -562,6 +603,16 @@ function DbExplorerCard({ db, onRemove, onRefresh }: {
             onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'hsl(var(--fg-subtle))'}>
             <Trash2 size={13} />
           </button>
+          <button
+            onClick={() => setTablePickerOpen(true)}
+            title="Select tables"
+            className="p-1.5 rounded-lg transition-colors"
+            style={{ color: 'hsl(var(--fg-subtle))' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'hsl(var(--primary))'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'hsl(var(--fg-subtle))'}
+          >
+            <CheckCheck size={13} />
+          </button>
           <button onClick={() => setExpanded(v => !v)}
             className="p-1.5 rounded-lg transition-colors"
             style={{ color: 'hsl(var(--fg-subtle))' }}>
@@ -612,13 +663,37 @@ function DbExplorerCard({ db, onRemove, onRefresh }: {
             </div>
           </div>
 
+          {activeTab === 'tables' && (
+            <div className="px-4 py-2 flex items-center gap-1.5" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
+              {([
+                { key: 'used', label: `Used (${(db.tables ?? []).filter(t => usedTables.has(t.table_name.toLowerCase())).length})` },
+                { key: 'unused', label: `Unused (${(db.tables ?? []).filter(t => !usedTables.has(t.table_name.toLowerCase())).length})` },
+              ] as { key: TableUsageFilter; label: string }[]).map(({ key, label }) => (
+                <button
+                  key={key}
+                  onClick={() => setTableUsageFilter(key)}
+                  className="px-2.5 h-6 rounded-md text-[11px] transition-all"
+                  style={{
+                    background: tableUsageFilter === key ? 'hsl(var(--primary-muted))' : 'hsl(var(--surface-raised))',
+                    color: tableUsageFilter === key ? 'hsl(var(--primary))' : 'hsl(var(--fg-muted))',
+                    border: '1px solid hsl(var(--border))',
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          )}
+
           {/* Content */}
           <div className="p-3" style={{ maxHeight: 480, overflowY: 'auto' }}>
             {activeTab === 'tables' && (
               tables.length === 0
                 ? <EmptyState icon={Table2} msg={search ? `No tables matching "${search}"` : 'No tables found'} />
                 : <div className="flex flex-col gap-2">
-                    {tables.map(t => <TableCard key={t.table_name} table={t} />)}
+                    {tables.map(t => (
+                      <TableCard key={t.table_name} table={t} used={usedTables.has(t.table_name.toLowerCase())} />
+                    ))}
                   </div>
             )}
 
@@ -642,6 +717,92 @@ function DbExplorerCard({ db, onRemove, onRefresh }: {
       )}
 
       {hintsOpen && <TableHintsModal db={db} onClose={() => setHintsOpen(false)} />}
+      {tablePickerOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: 'rgba(0,0,0,0.55)' }}
+          onClick={() => setTablePickerOpen(false)}
+        >
+          <div
+            className="w-full max-w-xl rounded-2xl overflow-hidden"
+            style={{ background: 'hsl(var(--surface))', border: '1px solid hsl(var(--border))' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-4 py-3 flex items-center justify-between" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
+              <div>
+                <div className="text-sm font-semibold" style={{ color: 'hsl(var(--fg))' }}>Select Tables</div>
+                <div className="text-xs" style={{ color: 'hsl(var(--fg-muted))' }}>
+                  {selectedTables.size} / {db.tables?.length ?? 0} selected
+                </div>
+              </div>
+              <button className="p-1.5 rounded-lg" onClick={() => setTablePickerOpen(false)}>
+                <X size={14} style={{ color: 'hsl(var(--fg-subtle))' }} />
+              </button>
+            </div>
+
+            <div className="px-4 py-3 flex items-center gap-2" style={{ borderBottom: '1px solid hsl(var(--border))' }}>
+              <div className="flex items-center gap-1.5 px-2.5 h-8 rounded-lg flex-1"
+                style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))' }}>
+                <Search size={12} style={{ color: 'hsl(var(--fg-subtle))' }} />
+                <input
+                  className="bg-transparent outline-none text-xs w-full"
+                  placeholder="Search tables..."
+                  value={pickerSearch}
+                  onChange={(e) => setPickerSearch(e.target.value)}
+                  style={{ color: 'hsl(var(--fg))' }}
+                />
+              </div>
+              <button
+                className="px-2.5 h-8 rounded-lg text-xs"
+                style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--fg-muted))' }}
+                onClick={() => applySelection(new Set(pickerTables.map((t) => t.table_name)))}
+              >
+                Select all
+              </button>
+              <button
+                className="px-2.5 h-8 rounded-lg text-xs"
+                style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--fg-muted))' }}
+                onClick={() => applySelection(new Set())}
+              >
+                Clear
+              </button>
+            </div>
+
+            <div className="p-3 overflow-y-auto" style={{ maxHeight: 340 }}>
+              {pickerTables.length === 0 ? (
+                <div className="text-xs text-center py-8" style={{ color: 'hsl(var(--fg-muted))' }}>No tables found.</div>
+              ) : (
+                <div className="flex flex-col gap-1">
+                  {pickerTables.map((t) => {
+                    const checked = selectedTables.has(t.table_name);
+                    const isUsed = usedTables.has(t.table_name.toLowerCase());
+                    return (
+                      <label key={t.table_name} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+                        style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))' }}>
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const next = new Set(selectedTables);
+                            if (e.target.checked) next.add(t.table_name);
+                            else next.delete(t.table_name);
+                            applySelection(next);
+                          }}
+                        />
+                        <span className="text-xs flex-1 truncate" style={{ color: 'hsl(var(--fg))' }}>{t.table_name}</span>
+                        <span className="text-[10px] px-1.5 py-0.5 rounded-full"
+                          style={{ background: isUsed ? 'hsl(var(--success-bg))' : 'hsl(var(--surface))', color: isUsed ? 'hsl(var(--success))' : 'hsl(var(--fg-subtle))' }}>
+                          {isUsed ? 'used' : 'unused'}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1076,6 +1237,7 @@ export function DatabasesPage() {
                 db={db}
                 onRemove={() => removeDatabase(db.id)}
                 onRefresh={schema => handleRefresh(db.id, schema)}
+                onSelectionChange={(selected) => updateDatabase(db.id, { selectedTables: selected })}
               />
             </div>
           ))}
