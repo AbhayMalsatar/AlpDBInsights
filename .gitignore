@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+*.egg-info/
+.env
+.env.*
+
+# Backend local data (credentials / caches — do not commit)
+backend/db_registry.json
+backend/sql_query_cache.json
+backend/schema_snapshots/
+backend/table_hints/
+
+# Node
+node_modules/
+dist/
+dist-ssr/
+*.local
+
+# OS / IDE
+.DS_Store
+.idea
+.vscode/*
+!.vscode/extensions.json
