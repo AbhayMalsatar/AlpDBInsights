@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import (
     DatabaseConnectRequest, DatabaseTestRequest, DatabaseConnectionStringRequest,
     QueryRequest, QueryResponse, DatabaseType, FullDatabaseSchema,
-    TableHintsPutBody,
+    TableHintsPutBody, TableIndexRequest,
 )
 from app.services.schema_service import (
     test_connection, extract_full_schema,
@@ -89,14 +89,7 @@ async def connect_database(request: DatabaseConnectRequest):
 
     db_id = str(uuid.uuid4())[:9]
 
-    # 3. Index tables into vector store
-    try:
-        vector_service = get_vector_service()
-        chunks = build_schema_chunks_with_hints(db_id, full.tables)
-        vector_service.store_schema_chunks(db_id, chunks)
-        logger.info(f"Stored {len(chunks)} schema chunks for {db_id}")
-    except Exception as e:
-        logger.warning(f"Vector storage failed (non-critical): {e}")
+    # 3. Skip vector indexing for now. Frontend will ask user to pick tables first.
 
     fp = schema_fingerprint(full.tables)
     try:
@@ -114,6 +107,7 @@ async def connect_database(request: DatabaseConnectRequest):
         "database": request.database,
         "schema_fingerprint": fp,
         "hints_fingerprint": hints_fingerprint({}),
+        "selected_tables": [],
     })
 
     return {
@@ -134,6 +128,48 @@ async def connect_database(request: DatabaseConnectRequest):
         "tables":     [t.model_dump() for t in full.tables],
         "views":      [v.model_dump() for v in full.views],
         "procedures": [p.model_dump() for p in full.procedures],
+        "selected_tables": [],
+    }
+
+
+@router.post("/{db_id}/index-tables")
+async def index_selected_tables(db_id: str, body: TableIndexRequest):
+    """Reindex only selected tables for this database."""
+    if db_id not in _database_registry:
+        raise HTTPException(status_code=404, detail="Database not found — please reconnect.")
+
+    from app.services.schema_snapshot import load_schema_snapshot
+
+    selected = [t for t in body.table_names if t and isinstance(t, str)]
+    selected_set = set(selected)
+
+    snap = load_schema_snapshot(db_id)
+    if not snap:
+        raise HTTPException(status_code=400, detail="Schema snapshot missing. Please refresh schema first.")
+
+    tables_to_index = [t for t in snap if t.table_name in selected_set]
+
+    try:
+        vector_service = get_vector_service()
+        vector_service.delete_database_chunks(db_id)
+        if tables_to_index:
+            chunks = build_schema_chunks_with_hints(db_id, tables_to_index)
+            vector_service.store_schema_chunks(db_id, chunks)
+        else:
+            chunks = []
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Vector indexing failed: {e}")
+
+    cfg = dict(_database_registry[db_id])
+    cfg["selected_tables"] = selected
+    _database_registry[db_id] = cfg
+    _save_registry()
+
+    return {
+        "ok": True,
+        "indexed_tables": [t.table_name for t in tables_to_index],
+        "indexed_count": len(tables_to_index),
+        "selected_count": len(selected),
     }
 
 

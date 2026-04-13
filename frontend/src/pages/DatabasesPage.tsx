@@ -11,7 +11,7 @@ import axios from 'axios';
 import { useAppStore } from '../store/useAppStore';
 import type {
   DatabaseConnection, TableInfo, ViewInfo, ProcedureInfo,
-  ChartType,
+  ChartData, ChartType,
 } from '../store/useAppStore';
 
 type DBType = 'postgresql' | 'mssql';
@@ -85,7 +85,7 @@ function ConnectModal({
     tables:           tablesFromResponse,
     views:            (d.views as ViewInfo[])       ?? [],
     procedures:       (d.procedures as ProcedureInfo[]) ?? [],
-    selectedTables:   tablesFromResponse.map((t) => t.table_name),
+    selectedTables:   [],
     };
   };
 
@@ -270,7 +270,7 @@ function ConnectModal({
               </button>
               <button type="button" onClick={handleConnect} disabled={status === 'connecting'}
                 className="flex-1 h-9 rounded-lg text-xs font-semibold btn-primary flex items-center justify-center gap-2">
-                {status === 'connecting' ? <><Loader2 size={13} className="anim-spin" /> Connecting…</> : 'Connect & index'}
+                {status === 'connecting' ? <><Loader2 size={13} className="anim-spin" /> Connecting…</> : 'Connect'}
               </button>
             </>
           ) : (
@@ -280,7 +280,7 @@ function ConnectModal({
               disabled={status === 'connecting'}
               className="w-full h-10 rounded-lg text-sm font-semibold btn-primary flex items-center justify-center gap-2"
             >
-              {status === 'connecting' ? <><Loader2 size={14} className="anim-spin" /> Connecting…</> : <><Link2 size={14} /> Connect & index</>}
+              {status === 'connecting' ? <><Loader2 size={14} className="anim-spin" /> Connecting…</> : <><Link2 size={14} /> Connect</>}
             </button>
           )}
         </div>
@@ -476,11 +476,13 @@ function ProcedureCard({ proc }: { proc: ProcedureInfo }) {
 type SchemaTab = 'tables' | 'views' | 'procedures';
 type TableUsageFilter = 'used' | 'unused';
 
-function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
+function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPicker, onAutoOpenHandled }: {
   db: DatabaseConnection;
   onRemove: () => void;
   onRefresh: (schema: { tables: TableInfo[]; views: ViewInfo[]; procedures: ProcedureInfo[] }) => void;
   onSelectionChange: (selected: string[]) => void;
+  autoOpenPicker?: boolean;
+  onAutoOpenHandled?: () => void;
 }) {
   const [activeTab, setActiveTab]   = useState<SchemaTab>('tables');
   const [search, setSearch]         = useState('');
@@ -491,6 +493,8 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
   const [selectedTables, setSelectedTables] = useState<Set<string>>(new Set());
+  const [draftSelectedTables, setDraftSelectedTables] = useState<Set<string>>(new Set());
+  const [savingSelection, setSavingSelection] = useState(false);
 
   const info = DB_TYPES.find(t => t.value === db.type)!;
 
@@ -507,6 +511,7 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
   };
 
   const usedTables = new Set(Array.from(selectedTables).map((t) => t.toLowerCase()));
+  const draftUsedTables = new Set(Array.from(draftSelectedTables).map((t) => t.toLowerCase()));
 
   useEffect(() => {
     const base = db.selectedTables !== undefined
@@ -515,10 +520,18 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
     setSelectedTables(new Set(base));
   }, [db.id, db.tables?.length, db.selectedTables]);
 
-  const applySelection = (next: Set<string>) => {
-    setSelectedTables(next);
-    onSelectionChange(Array.from(next));
-  };
+  useEffect(() => {
+    if (tablePickerOpen) {
+      setDraftSelectedTables(new Set(selectedTables));
+    }
+  }, [tablePickerOpen, selectedTables]);
+
+  useEffect(() => {
+    if (autoOpenPicker) {
+      setTablePickerOpen(true);
+      onAutoOpenHandled?.();
+    }
+  }, [autoOpenPicker, onAutoOpenHandled]);
 
   const tables = (db.tables ?? [])
     .filter(t => t.table_name.toLowerCase().includes(search.toLowerCase()))
@@ -531,6 +544,22 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
 
   const pickerTables = (db.tables ?? [])
     .filter((t) => t.table_name.toLowerCase().includes(pickerSearch.toLowerCase()));
+
+  const saveTableSelection = async () => {
+    setSavingSelection(true);
+    try {
+      const selected = Array.from(draftSelectedTables);
+      await axios.post(`/api/database/${db.id}/index-tables`, { table_names: selected });
+      setSelectedTables(new Set(selected));
+      onSelectionChange(selected);
+      setTablePickerOpen(false);
+    } catch (e) {
+      console.error('Table indexing failed', e);
+      alert('Indexing failed. Please try again.');
+    } finally {
+      setSavingSelection(false);
+    }
+  };
 
   const tabMeta: { key: SchemaTab; label: string; icon: typeof Table2; count: number }[] = [
     { key: 'tables',     label: 'Tables',     icon: Table2,      count: db.tables?.length     ?? 0 },
@@ -732,7 +761,7 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
               <div>
                 <div className="text-sm font-semibold" style={{ color: 'hsl(var(--fg))' }}>Select Tables</div>
                 <div className="text-xs" style={{ color: 'hsl(var(--fg-muted))' }}>
-                  {selectedTables.size} / {db.tables?.length ?? 0} selected
+                  {draftSelectedTables.size} / {db.tables?.length ?? 0} selected
                 </div>
               </div>
               <button className="p-1.5 rounded-lg" onClick={() => setTablePickerOpen(false)}>
@@ -755,14 +784,14 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
               <button
                 className="px-2.5 h-8 rounded-lg text-xs"
                 style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--fg-muted))' }}
-                onClick={() => applySelection(new Set(pickerTables.map((t) => t.table_name)))}
+                onClick={() => setDraftSelectedTables(new Set(pickerTables.map((t) => t.table_name)))}
               >
                 Select all
               </button>
               <button
                 className="px-2.5 h-8 rounded-lg text-xs"
                 style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--fg-muted))' }}
-                onClick={() => applySelection(new Set())}
+                onClick={() => setDraftSelectedTables(new Set())}
               >
                 Clear
               </button>
@@ -774,8 +803,8 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
               ) : (
                 <div className="flex flex-col gap-1">
                   {pickerTables.map((t) => {
-                    const checked = selectedTables.has(t.table_name);
-                    const isUsed = usedTables.has(t.table_name.toLowerCase());
+                    const checked = draftSelectedTables.has(t.table_name);
+                    const isUsed = draftUsedTables.has(t.table_name.toLowerCase());
                     return (
                       <label key={t.table_name} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
                         style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))' }}>
@@ -783,10 +812,10 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
                           type="checkbox"
                           checked={checked}
                           onChange={(e) => {
-                            const next = new Set(selectedTables);
+                            const next = new Set(draftSelectedTables);
                             if (e.target.checked) next.add(t.table_name);
                             else next.delete(t.table_name);
-                            applySelection(next);
+                            setDraftSelectedTables(next);
                           }}
                         />
                         <span className="text-xs flex-1 truncate" style={{ color: 'hsl(var(--fg))' }}>{t.table_name}</span>
@@ -799,6 +828,26 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange }: {
                   })}
                 </div>
               )}
+            </div>
+            <div className="px-4 py-3 flex items-center justify-end gap-2" style={{ borderTop: '1px solid hsl(var(--border))' }}>
+              <button
+                className="px-3 h-8 rounded-lg text-xs"
+                style={{ background: 'hsl(var(--surface-raised))', border: '1px solid hsl(var(--border))', color: 'hsl(var(--fg-muted))' }}
+                onClick={() => {
+                  setDraftSelectedTables(new Set(selectedTables));
+                  setTablePickerOpen(false);
+                }}
+                disabled={savingSelection}
+              >
+                Cancel
+              </button>
+              <button
+                className="px-3 h-8 rounded-lg text-xs btn-primary"
+                onClick={saveTableSelection}
+                disabled={savingSelection}
+              >
+                {savingSelection ? 'Saving…' : 'Save'}
+              </button>
             </div>
           </div>
         </div>
@@ -1113,6 +1162,7 @@ export function DatabasesPage() {
   const { databases, addDatabase, removeDatabase, updateDatabase } = useAppStore();
   const [showModal, setShowModal]     = useState(false);
   const [autoGenDb, setAutoGenDb]     = useState<DatabaseConnection | null>(null);
+  const [autoOpenPickerDbId, setAutoOpenPickerDbId] = useState<string | null>(null);
 
   const handleRefresh = (
     dbId: string,
@@ -1238,6 +1288,8 @@ export function DatabasesPage() {
                 onRemove={() => removeDatabase(db.id)}
                 onRefresh={schema => handleRefresh(db.id, schema)}
                 onSelectionChange={(selected) => updateDatabase(db.id, { selectedTables: selected })}
+                autoOpenPicker={autoOpenPickerDbId === db.id}
+                onAutoOpenHandled={() => setAutoOpenPickerDbId(null)}
               />
             </div>
           ))}
@@ -1247,7 +1299,11 @@ export function DatabasesPage() {
       {showModal && (
         <ConnectModal
           onClose={() => setShowModal(false)}
-          onConnected={db => { addDatabase(db); setShowModal(false); }}
+          onConnected={db => {
+            addDatabase(db);
+            setAutoOpenPickerDbId(db.id);
+            setShowModal(false);
+          }}
         />
       )}
 

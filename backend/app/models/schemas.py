@@ -111,6 +111,10 @@ class QueryRequest(BaseModel):
     limit: int = Field(default=1000, le=10000)
 
 
+class TableIndexRequest(BaseModel):
+    table_names: List[str] = Field(default_factory=list)
+
+
 class QueryResponse(BaseModel):
     columns: List[str]
     rows: List[Dict[str, Any]]

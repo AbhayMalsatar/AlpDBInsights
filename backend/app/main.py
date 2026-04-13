@@ -39,7 +39,14 @@ async def lifespan(app: FastAPI):
                         cfg["username"], cfg["password"],
                         cfg["database"],
                     )
-                    chunks = build_schema_chunks_with_hints(db_id, tables)
+                    selected = cfg.get("selected_tables")
+                    if selected is None:
+                        tables_for_index = tables
+                    else:
+                        selected_set = set(selected)
+                        tables_for_index = [t for t in tables if t.table_name in selected_set]
+                    chunks = build_schema_chunks_with_hints(db_id, tables_for_index)
+                    vector_service.delete_database_chunks(db_id)
                     vector_service.store_schema_chunks(db_id, chunks)
                     save_schema_snapshot(db_id, tables)
                     cfg["schema_fingerprint"] = schema_fingerprint(tables)
