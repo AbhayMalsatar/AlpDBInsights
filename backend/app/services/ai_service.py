@@ -359,6 +359,7 @@ async def _handle_create_chart(
             query=message,
             schema_context=schema_context,
             db_type=db_config.get("type", "postgresql"),
+            db_id=db_id,
         )
 
         if sql:
@@ -567,7 +568,7 @@ async def process_chat_v2(request) -> dict:
 
     if is_ambiguous(message, frontend_schema):
         # Try LLM clarification first (richer), fallback to rule-based
-        llm_reply = llm_clarification(message, frontend_schema) if frontend_schema else ""
+        llm_reply = llm_clarification(message, frontend_schema, db_id=db_id) if frontend_schema else ""
         if llm_reply:
             # Parse suggestions from lines starting with "- "
             lines = llm_reply.splitlines()
@@ -676,7 +677,7 @@ async def process_chat_v2(request) -> dict:
                 message, tbls, db_id, vector_top_k=10, keyword_pool=40, hints_by_table=hints_by_table,
             )
             planned, planner_source = plan_relevant_tables(
-                message, candidates, max_tables=12, use_llm=True, hints_by_table=hints_by_table,
+                message, candidates, max_tables=12, use_llm=True, hints_by_table=hints_by_table, db_id=db_id,
             )
             names_set = expand_fk_neighbors(set(planned), tbls)
             selected = [t for t in tbls if t.table_name in names_set]
@@ -798,6 +799,7 @@ async def process_chat_v2(request) -> dict:
                     query=message,
                     schema_context=ctx,
                     db_type=db_type,
+                    db_id=db_id,
                 )
                 logger.info(f"[chat_v2] LLM SQL (attempt {attempt + 1}): {raw_sql}")
                 if not raw_sql:

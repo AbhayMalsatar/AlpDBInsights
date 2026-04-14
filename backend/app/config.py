@@ -9,7 +9,10 @@ class Settings(BaseSettings):
 
     ai_provider: str = "mock"
     openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+    openai_fine_tune_base_model: str = "gpt-4.1-mini-2025-04-14"
     anthropic_api_key: str = ""
+    anthropic_model: str = "claude-3-5-haiku-20241022"
 
     qdrant_host: str = "localhost"
     qdrant_port: int = 6333

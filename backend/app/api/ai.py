@@ -51,7 +51,8 @@ async def generate_sql_endpoint(body: dict):
     from app.agents.sql_agent import generate_sql_with_llm
     prompt = body.get("prompt", "")
     schema = body.get("schemaContext", "")
-    sql = generate_sql_with_llm(prompt, schema)
+    db_id = body.get("db_id") or body.get("databaseId")
+    sql = generate_sql_with_llm(prompt, schema, db_id=db_id)
     return {"sql": sql or "SELECT 1"}
 
 
@@ -80,7 +81,7 @@ async def auto_dashboard(request: AutoDashboardRequest):
 
     try:
         # Step 1: Plan with LLM (falls back to rule-based if no API key)
-        plan = plan_dashboard_with_llm(request.schema_context, db_type)
+        plan = plan_dashboard_with_llm(request.schema_context, db_type, db_id=request.db_id)
         if not plan:
             logger.info("[auto-dashboard] Using rule-based plan")
             plan = build_rule_based_plan(request.schema_context, db_type)

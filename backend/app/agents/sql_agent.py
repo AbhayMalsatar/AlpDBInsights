@@ -3,6 +3,7 @@ import logging
 import re
 from typing import Optional
 from app.config import settings
+from app.services.fine_tuning_service import resolve_openai_model
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ Respond with ONLY the SQL query — no explanation, no markdown code fences, no 
 
 
 def generate_sql_with_llm(query: str, schema_context: str, db_type: str = "postgresql",
-                           limit: int = 500) -> Optional[str]:
+                           limit: int = 500, db_id: Optional[str] = None) -> Optional[str]:
     """
     Generate SQL using configured LLM provider.
     Always falls back to rule-based SQL if the LLM is unavailable or returns nothing.
@@ -50,7 +51,7 @@ def generate_sql_with_llm(query: str, schema_context: str, db_type: str = "postg
     sql: Optional[str] = None
 
     if provider == "openai" and settings.openai_api_key:
-        sql = _call_openai(prompt)
+        sql = _call_openai(prompt, db_id=db_id)
         if not sql:
             logger.warning("[sql_agent] OpenAI returned nothing — falling back to rule-based SQL")
     elif provider == "anthropic" and settings.anthropic_api_key:
@@ -65,7 +66,7 @@ def generate_sql_with_llm(query: str, schema_context: str, db_type: str = "postg
     return sql
 
 
-def _call_openai(prompt: str) -> Optional[str]:
+def _call_openai(prompt: str, db_id: Optional[str] = None) -> Optional[str]:
     try:
         from openai import OpenAI
     except ImportError:
@@ -73,14 +74,15 @@ def _call_openai(prompt: str) -> Optional[str]:
         return None
     try:
         client = OpenAI(api_key=settings.openai_api_key)
+        model = resolve_openai_model(db_id, settings.openai_model)
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=600,
         )
         sql = response.choices[0].message.content or ""
-        logger.info(f"[sql_agent] OpenAI responded: {sql[:80]}…")
+        logger.info(f"[sql_agent] OpenAI model=%s responded: %s…", model, sql[:80])
         return _clean_sql(sql)
     except Exception as e:
         logger.error(f"[sql_agent] OpenAI API error: {type(e).__name__}: {e}")

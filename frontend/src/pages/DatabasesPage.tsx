@@ -4,10 +4,12 @@ import {
   Database, Plus, Trash2, RefreshCw, CheckCircle2, XCircle,
   Loader2, Table2, Server, ShieldCheck, ChevronDown, ChevronRight,
   Key, Link2, Search, Eye, Code2, Rows3, Hash, LayoutList,
-  Sparkles, BarChart2, CheckCheck, AlertCircle, BookMarked, List, ClipboardPaste, X,
+  Sparkles, BarChart2, CheckCheck, AlertCircle, BookMarked, List, ClipboardPaste, X, Brain,
 } from 'lucide-react';
 import { TableHintsModal } from '../components/databases/TableHintsModal';
+import { FineTuneModal } from '../components/databases/FineTuneModal';
 import axios from 'axios';
+import { databaseApi, type FineTuneStatus } from '../api/database';
 import { useAppStore } from '../store/useAppStore';
 import type {
   DatabaseConnection, TableInfo, ViewInfo, ProcedureInfo,
@@ -489,6 +491,8 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPi
   const [expanded, setExpanded]     = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [hintsOpen, setHintsOpen]   = useState(false);
+  const [fineTuneOpen, setFineTuneOpen] = useState(false);
+  const [fineTuneStatus, setFineTuneStatus] = useState<FineTuneStatus | null>(null);
   const [tableUsageFilter, setTableUsageFilter] = useState<TableUsageFilter>('used');
   const [tablePickerOpen, setTablePickerOpen] = useState(false);
   const [pickerSearch, setPickerSearch] = useState('');
@@ -532,6 +536,29 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPi
       onAutoOpenHandled?.();
     }
   }, [autoOpenPicker, onAutoOpenHandled]);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadFineTune = async () => {
+      try {
+        const next = await databaseApi.getFineTuneStatus(db.id);
+        if (!cancelled) setFineTuneStatus(next);
+      } catch {
+        if (!cancelled) setFineTuneStatus(null);
+      }
+    };
+
+    void loadFineTune();
+    const id = window.setInterval(() => {
+      void loadFineTune();
+    }, 10000);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [db.id]);
 
   const tables = (db.tables ?? [])
     .filter(t => t.table_name.toLowerCase().includes(search.toLowerCase()))
@@ -588,6 +615,11 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPi
           </div>
           <div className="text-xs truncate" style={{ color: 'hsl(var(--fg-muted))' }}>
             {db.host}:{db.port} / {db.database} · {db.username}
+            {fineTuneStatus?.fine_tuned_model ? (
+              <span style={{ color: 'hsl(var(--primary))' }}> · FT ready</span>
+            ) : fineTuneStatus?.status && ['queued', 'running', 'validating_files'].includes(fineTuneStatus.status) ? (
+              <span style={{ color: 'hsl(var(--primary))' }}> · FT {fineTuneStatus.status}</span>
+            ) : null}
           </div>
         </div>
 
@@ -624,6 +656,16 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPi
             onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = 'hsl(var(--fg-subtle))'}
           >
             <BookMarked size={13} />
+          </button>
+          <button
+            onClick={() => setFineTuneOpen(true)}
+            title="Fine-tune AI with schema snapshot and table hints"
+            className="p-1.5 rounded-lg transition-colors flex items-center gap-1"
+            style={{ color: fineTuneStatus?.fine_tuned_model ? 'hsl(var(--primary))' : 'hsl(var(--fg-subtle))' }}
+            onMouseEnter={e => (e.currentTarget as HTMLElement).style.color = 'hsl(var(--primary))'}
+            onMouseLeave={e => (e.currentTarget as HTMLElement).style.color = fineTuneStatus?.fine_tuned_model ? 'hsl(var(--primary))' : 'hsl(var(--fg-subtle))'}
+          >
+            <Brain size={13} />
           </button>
           <button onClick={onRemove} title="Disconnect"
             className="p-1.5 rounded-lg transition-colors"
@@ -746,6 +788,7 @@ function DbExplorerCard({ db, onRemove, onRefresh, onSelectionChange, autoOpenPi
       )}
 
       {hintsOpen && <TableHintsModal db={db} onClose={() => setHintsOpen(false)} />}
+      {fineTuneOpen && <FineTuneModal db={db} onClose={() => setFineTuneOpen(false)} />}
       {tablePickerOpen && (
         <div
           className="fixed inset-0 z-50 flex items-center justify-center p-4"

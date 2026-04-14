@@ -6,7 +6,9 @@ import logging
 import re
 from typing import Any, Optional
 
+from app.config import settings
 from app.models.schemas import TableSchema
+from app.services.fine_tuning_service import resolve_openai_model
 
 logger = logging.getLogger(__name__)
 
@@ -70,11 +72,11 @@ def plan_tables_llm(
     candidates: list[TableSchema],
     max_tables: int = 10,
     hints_by_table: Optional[dict[str, dict[str, Any]]] = None,
+    db_id: Optional[str] = None,
 ) -> Optional[list[str]]:
     """Ask a small model which table names are required. Returns None on failure."""
     try:
         from openai import OpenAI
-        from app.config import settings
         if not settings.openai_api_key:
             return None
         lines: list[str] = []
@@ -92,8 +94,9 @@ def plan_tables_llm(
             f"Return JSON only: {{\"tables\": [\"name1\", ...]}} with at most {max_tables} table names.\n"
         )
         client = OpenAI(api_key=settings.openai_api_key)
+        model = resolve_openai_model(db_id, settings.openai_model)
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0,
             max_tokens=120,
@@ -117,12 +120,19 @@ def plan_relevant_tables(
     max_tables: int = 10,
     use_llm: bool = True,
     hints_by_table: Optional[dict[str, dict[str, Any]]] = None,
+    db_id: Optional[str] = None,
 ) -> tuple[list[str], str]:
     """
     Returns (table_names, planner_source).
     """
     if use_llm:
-        llm = plan_tables_llm(message, candidates, max_tables=max_tables, hints_by_table=hints_by_table)
+        llm = plan_tables_llm(
+            message,
+            candidates,
+            max_tables=max_tables,
+            hints_by_table=hints_by_table,
+            db_id=db_id,
+        )
         if llm:
             return llm, "llm"
     rules = plan_tables_rules(

@@ -1,6 +1,25 @@
 import { apiClient } from './client'
 import type { TableSchema } from '@/types'
 
+export interface FineTuneStatus {
+  status: string
+  provider: string
+  enabled: boolean
+  active_model?: string | null
+  fine_tuned_model?: string | null
+  base_model?: string | null
+  job_id?: string | null
+  training_file_id?: string | null
+  training_examples: number
+  dataset_tables: string[]
+  mode?: string | null
+  last_started_at?: string | null
+  last_completed_at?: string | null
+  last_checked_at?: string | null
+  last_error?: string | null
+  message?: string | null
+}
+
 interface ConnectPayload {
   type: 'postgresql' | 'mssql'
   name: string
@@ -56,6 +75,19 @@ export const databaseApi = {
     name?: string
   }): Promise<Record<string, unknown>> => {
     const { data } = await apiClient.post('/database/connect-string', payload)
+    return data
+  },
+
+  getFineTuneStatus: async (dbId: string): Promise<FineTuneStatus> => {
+    const { data } = await apiClient.get(`/database/${dbId}/fine-tune-status`)
+    return data
+  },
+
+  startFineTune: async (
+    dbId: string,
+    body?: { table_names?: string[]; auto?: boolean },
+  ): Promise<FineTuneStatus> => {
+    const { data } = await apiClient.post(`/database/${dbId}/fine-tune`, body ?? {})
     return data
   },
 }

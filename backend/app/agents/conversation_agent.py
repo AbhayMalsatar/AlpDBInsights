@@ -4,6 +4,10 @@ Makes the AI feel like a real data analyst assistant.
 """
 import re
 import logging
+from typing import Optional
+
+from app.config import settings
+from app.services.fine_tuning_service import resolve_openai_model
 
 logger = logging.getLogger(__name__)
 
@@ -151,14 +155,14 @@ def clarification_response(msg: str, schema_context: str) -> dict:
     }
 
 
-def llm_clarification(msg: str, schema_context: str) -> str:
+def llm_clarification(msg: str, schema_context: str, db_id: Optional[str] = None) -> str:
     """Use OpenAI to generate a smart clarifying question."""
     try:
         from openai import OpenAI
-        from app.config import settings
         if not settings.openai_api_key:
             return ""
         client = OpenAI(api_key=settings.openai_api_key)
+        model = resolve_openai_model(db_id, settings.openai_model)
         prompt = f"""You are a friendly data analyst chatbot. 
 The user sent: "{msg}"
 The database has these tables (schema below). The request is unclear or incomplete.
@@ -171,7 +175,7 @@ Then provide 3-4 concrete example questions they could ask, each on its own line
 Keep it conversational and helpful. Do not use markdown headers."""
 
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.7,
             max_tokens=200,

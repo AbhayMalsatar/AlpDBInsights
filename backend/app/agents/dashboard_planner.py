@@ -8,6 +8,9 @@ import logging
 import re
 from typing import Optional
 
+from app.config import settings
+from app.services.fine_tuning_service import resolve_openai_model
+
 logger = logging.getLogger(__name__)
 
 PLAN_PROMPT = """You are an expert business intelligence analyst.
@@ -56,20 +59,20 @@ Chart types: bar, line, area, pie, table
 """
 
 
-def plan_dashboard_with_llm(schema_context: str, db_type: str = "postgresql") -> Optional[dict]:
+def plan_dashboard_with_llm(schema_context: str, db_type: str = "postgresql", db_id: Optional[str] = None) -> Optional[dict]:
     """Ask LLM to return a JSON dashboard plan with ≥6 charts per tab."""
     try:
         from openai import OpenAI
-        from app.config import settings
         if not settings.openai_api_key:
             logger.warning("No OpenAI key — using rule-based plan")
             return None
 
         client = OpenAI(api_key=settings.openai_api_key)
+        model = resolve_openai_model(db_id, settings.openai_model)
         prompt = PLAN_PROMPT.format(schema=schema_context[:8000], db_type=db_type)
 
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
             max_tokens=4000,

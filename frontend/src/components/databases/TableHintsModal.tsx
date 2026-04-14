@@ -4,6 +4,7 @@ import {
   X, Loader2, Search, Plus, Trash2, BookMarked, CheckCircle2, AlertCircle,
   ChevronRight, Info,
 } from 'lucide-react';
+import type { FineTuneStatus } from '../../api/database';
 import type { DatabaseConnection } from '../../store/useAppStore';
 
 type TableOverview = {
@@ -168,11 +169,26 @@ export function TableHintsModal({
     try {
       const tables = buildPayloadForCurrentTable();
       if (!tables) return;
-      const res = await axios.put<{ ok: boolean; hints_fingerprint: string; reindexed_tables: string[] }>(
+      const res = await axios.put<{
+        ok: boolean;
+        hints_fingerprint: string;
+        reindexed_tables: string[];
+        auto_fine_tune?: FineTuneStatus;
+      }>(
         `/api/database/${db.id}/table-hints`,
         { tables },
       );
-      setOkMsg(`Saved. Search index updated for: ${(res.data.reindexed_tables || []).join(', ') || selected}.`);
+      const ft = res.data.auto_fine_tune;
+      const ftMsg = ft?.enabled
+        ? ft.status === 'failed'
+          ? ` Auto fine-tune failed: ${ft.last_error || 'unknown error'}.`
+          : ft.status === 'succeeded'
+          ? ` Fine-tuned model ready: ${ft.fine_tuned_model || ft.active_model}.`
+          : ` Auto fine-tune ${ft.status}${ft.job_id ? ` (${ft.job_id})` : ''}.`
+        : ft?.message
+        ? ` ${ft.message}`
+        : '';
+      setOkMsg(`Saved. Search index updated for: ${(res.data.reindexed_tables || []).join(', ') || selected}.${ftMsg}`);
       await load();
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Save failed.';

@@ -16,6 +16,7 @@ backend/db_registry.json
 backend/sql_query_cache.json
 backend/schema_snapshots/
 backend/table_hints/
+backend/fine_tuning_data/
 
 # Node
 node_modules/

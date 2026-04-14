@@ -89,6 +89,30 @@ class TableHintsPutBody(BaseModel):
     tables: Dict[str, TableHintDoc] = Field(default_factory=dict)
 
 
+class FineTuneRequest(BaseModel):
+    table_names: List[str] = Field(default_factory=list)
+    auto: bool = False
+
+
+class FineTuneStatus(BaseModel):
+    status: str = "idle"
+    provider: str = "openai"
+    enabled: bool = False
+    active_model: Optional[str] = None
+    fine_tuned_model: Optional[str] = None
+    base_model: Optional[str] = None
+    job_id: Optional[str] = None
+    training_file_id: Optional[str] = None
+    training_examples: int = 0
+    dataset_tables: List[str] = Field(default_factory=list)
+    mode: Optional[str] = None
+    last_started_at: Optional[str] = None
+    last_completed_at: Optional[str] = None
+    last_checked_at: Optional[str] = None
+    last_error: Optional[str] = None
+    message: Optional[str] = None
+
+
 class DatabaseConnectResponse(BaseModel):
     model_config = {"populate_by_name": True}
 

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { useSearchParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, MessageSquare, PanelRightClose } from 'lucide-react';
+import { ArrowLeft, MessageSquare } from 'lucide-react';
 import { useAppStore } from '../store/useAppStore';
 import { BuilderSidebar } from '../components/builder/BuilderSidebar';
 import { BuilderCanvas } from '../components/builder/BuilderCanvas';

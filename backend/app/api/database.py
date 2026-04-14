@@ -2,7 +2,7 @@ from fastapi import APIRouter, HTTPException
 from app.models.schemas import (
     DatabaseConnectRequest, DatabaseTestRequest, DatabaseConnectionStringRequest,
     QueryRequest, QueryResponse, DatabaseType, FullDatabaseSchema,
-    TableHintsPutBody, TableIndexRequest,
+    TableHintsPutBody, TableIndexRequest, FineTuneRequest,
 )
 from app.services.schema_service import (
     test_connection, extract_full_schema,
@@ -20,6 +20,11 @@ from app.services.table_hints_service import (
 from app.services.schema_metadata import table_to_rag_document
 from app.services.ai_service import (
     register_database, unregister_database, _database_registry, _save_registry,
+)
+from app.services.fine_tuning_service import (
+    get_fine_tune_state,
+    refresh_fine_tune_state,
+    start_fine_tune,
 )
 import uuid
 from datetime import datetime
@@ -108,6 +113,7 @@ async def connect_database(request: DatabaseConnectRequest):
         "schema_fingerprint": fp,
         "hints_fingerprint": hints_fingerprint({}),
         "selected_tables": [],
+        "fine_tune": get_fine_tune_state(db_id),
     })
 
     return {
@@ -129,6 +135,7 @@ async def connect_database(request: DatabaseConnectRequest):
         "views":      [v.model_dump() for v in full.views],
         "procedures": [p.model_dump() for p in full.procedures],
         "selected_tables": [],
+        "fine_tune": get_fine_tune_state(db_id),
     }
 
 
@@ -239,11 +246,47 @@ async def put_table_hints(db_id: str, body: TableHintsPutBody):
         except Exception as e:
             logger.warning(f"Vector reindex after hints failed: {e}")
 
+    auto_fine_tune = refresh_fine_tune_state(db_id, force=False)
+    try:
+        if touched and auto_fine_tune.get("enabled"):
+            auto_fine_tune = start_fine_tune(db_id, table_names=sorted(touched), auto=True)
+        elif touched and not auto_fine_tune.get("enabled"):
+            auto_fine_tune["message"] = "Auto fine-tune is unavailable until OpenAI provider and API key are configured."
+    except Exception as e:
+        logger.warning(f"Auto fine-tune skipped for {db_id}: {e}")
+        auto_fine_tune = refresh_fine_tune_state(db_id, force=False)
+        auto_fine_tune["message"] = str(e)
+
     return {
         "ok": True,
         "hints_fingerprint": hp,
         "reindexed_tables": [c["table_name"] for c in chunks],
+        "auto_fine_tune": auto_fine_tune,
     }
+
+
+@router.get("/{db_id}/fine-tune-status")
+async def get_fine_tune_status(db_id: str):
+    if db_id not in _database_registry:
+        raise HTTPException(status_code=404, detail="Database not found — please reconnect.")
+    return refresh_fine_tune_state(db_id, force=False)
+
+
+@router.post("/{db_id}/fine-tune")
+async def trigger_fine_tune(db_id: str, body: FineTuneRequest):
+    if db_id not in _database_registry:
+        raise HTTPException(status_code=404, detail="Database not found — please reconnect.")
+    try:
+        state = start_fine_tune(
+            db_id,
+            table_names=body.table_names or None,
+            auto=body.auto,
+        )
+        return state
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Fine-tuning failed to start: {e}")
 
 
 @router.get("/{db_id}/schema")

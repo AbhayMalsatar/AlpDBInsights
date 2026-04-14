@@ -489,7 +489,7 @@ export function BuilderChat({ dashboardId, activeTabId }: Props) {
           </button>
         </div>
         <p className="text-center mt-1.5 text-[9px]" style={{ color: 'hsl(var(--fg-subtle))' }}>
-          Powered by GPT-4o-mini · Press Enter to send
+          Powered by AI · Press Enter to send
         </p>
       </div>
     </div>
