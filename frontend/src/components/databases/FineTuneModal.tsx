@@ -73,7 +73,9 @@ export function FineTuneModal({
     setStarting(true);
     setErr(null);
     try {
-      const next = await databaseApi.startFineTune(db.id);
+      const next = await databaseApi.startFineTune(db.id, {
+        table_names: db.selectedTables?.length ? db.selectedTables : undefined,
+      });
       setStatus(next);
     } catch (e: unknown) {
       const msg = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ?? 'Failed to start fine-tuning.';
@@ -86,6 +88,7 @@ export function FineTuneModal({
   const tone = statusTone(status?.status ?? 'idle');
   const ToneIcon = tone.icon;
   const tableCount = db.tables?.length ?? db.tablesCount ?? 0;
+  const selectedCount = db.selectedTables?.length ?? 0;
   const hintedCount = useMemo(() => status?.dataset_tables?.length ?? 0, [status?.dataset_tables]);
   const running = Boolean(status && RUNNING.has(status.status));
 
@@ -107,8 +110,8 @@ export function FineTuneModal({
               Fine-tune AI model - {db.name}
             </h2>
             <p className="text-xs mt-1 max-w-xl" style={{ color: 'hsl(var(--fg-muted))' }}>
-              Train an OpenAI model with this database snapshot and saved table hints. Future hint saves will auto-train only
-              the touched tables.
+              Train an OpenAI model with the selected tables from this database plus their saved table hints. Future hint saves
+              will auto-train only the touched selected tables.
             </p>
           </div>
           <button
@@ -126,7 +129,8 @@ export function FineTuneModal({
           <div className="grid grid-cols-3 gap-3">
             {[
               { label: 'Snapshot tables', value: tableCount },
-              { label: 'Current dataset tables', value: hintedCount || tableCount },
+              { label: 'Selected tables', value: selectedCount },
+              { label: 'Current dataset tables', value: hintedCount || selectedCount || tableCount },
               { label: 'Training examples', value: status?.training_examples ?? 0 },
             ].map((item) => (
               <div
@@ -195,6 +199,10 @@ export function FineTuneModal({
             <div className="text-xs leading-relaxed" style={{ color: 'hsl(var(--fg-muted))' }}>
               The backend builds JSONL training examples from the saved schema snapshot, table descriptions, discriminator
               rules, row-count hints, and segment filters for this database.
+            </div>
+            <div className="text-xs leading-relaxed" style={{ color: 'hsl(var(--fg-muted))' }}>
+              It automatically excludes the common audit columns <code>addby</code>, <code>editby</code>, <code>adddate</code>,
+              and <code>editdate</code>.
             </div>
             <div className="text-xs leading-relaxed" style={{ color: 'hsl(var(--fg-muted))' }}>
               After the job succeeds, AI requests for this database automatically switch to the fine-tuned model.

@@ -33,6 +33,31 @@ DATABASE TYPE: {db_type}
 Respond with ONLY the SQL query — no explanation, no markdown code fences, no comments.
 """
 
+SQL_REPAIR_PROMPT_TEMPLATE = """You are an expert SQL repair assistant.
+
+Fix the SQL query using the database error and the allowed schema.
+
+Allowed Schema (use ONLY these tables and columns):
+{schema}
+
+Original User Request: {query}
+
+Broken SQL:
+{sql}
+
+Database Error:
+{error}
+
+STRICT RULES:
+1. Return ONLY one corrected SELECT query.
+2. Use only tables and columns from the allowed schema.
+3. Fix invalid tables, invalid columns, wrong joins, ambiguous aliases, and SQL syntax errors.
+4. Keep the query intent the same as the original user request.
+5. Never return explanations, markdown, comments, or multiple statements.
+
+DATABASE TYPE: {db_type}
+"""
+
 
 def generate_sql_with_llm(query: str, schema_context: str, db_type: str = "postgresql",
                            limit: int = 500, db_id: Optional[str] = None) -> Optional[str]:
@@ -64,6 +89,33 @@ def generate_sql_with_llm(query: str, schema_context: str, db_type: str = "postg
         sql = _generate_rule_based_sql(query, schema_context, db_type, limit)
 
     return sql
+
+
+def repair_sql_with_llm(
+    query: str,
+    broken_sql: str,
+    error_message: str,
+    schema_context: str,
+    db_type: str = "postgresql",
+    db_id: Optional[str] = None,
+) -> Optional[str]:
+    prompt = SQL_REPAIR_PROMPT_TEMPLATE.format(
+        schema=schema_context,
+        query=query,
+        sql=broken_sql,
+        error=error_message,
+        db_type=db_type.upper(),
+    )
+
+    provider = settings.ai_provider.lower()
+    repaired: Optional[str] = None
+
+    if provider == "openai" and settings.openai_api_key:
+        repaired = _call_openai(prompt, db_id=db_id)
+    elif provider == "anthropic" and settings.anthropic_api_key:
+        repaired = _call_anthropic(prompt)
+
+    return repaired
 
 
 def _call_openai(prompt: str, db_id: Optional[str] = None) -> Optional[str]:

@@ -11,7 +11,7 @@ from typing import Optional
 from app.models.schemas import AIChatRequest, AIChatResponse, ChartConfig, GridLayout, ChartType
 from app.agents.intent_agent import detect_intent, extract_chart_hints, AIIntent
 from app.agents.schema_agent import find_relevant_schema
-from app.agents.sql_agent import generate_sql_with_llm
+from app.agents.sql_agent import generate_sql_with_llm, repair_sql_with_llm
 from app.agents.chart_agent import determine_chart_type, determine_chart_title, determine_layout, select_keys
 
 logger = logging.getLogger(__name__)
@@ -176,6 +176,92 @@ def _fix_unknown_columns(sql: str, table_columns: dict[str, set[str]]) -> tuple[
             changed = True
             logger.info(f"[chat_v2] Corrected unknown column {alias}.{col} -> {alias}.{nearest[0]}")
     return updated, changed
+
+
+def _is_sql_repairable_error(err: str) -> bool:
+    lower = (err or "").lower()
+    repair_markers = [
+        "does not exist",
+        "invalid column name",
+        "invalid object name",
+        "unknown column",
+        "undefined column",
+        "undefined table",
+        "syntax error",
+        "incorrect syntax",
+        "ambiguous column",
+    ]
+    return any(marker in lower for marker in repair_markers)
+
+
+def _extract_db_error_identifier(err: str) -> tuple[Optional[str], Optional[str]]:
+    patterns = [
+        ("column", r'column ["`]?([\w\.]+)["`]? does not exist'),
+        ("table", r'relation ["`]?([\w\.]+)["`]? does not exist'),
+        ("column", r"invalid column name ['\"]?([\w\.]+)['\"]?"),
+        ("table", r"invalid object name ['\"]?([\w\.]+)['\"]?"),
+        ("column", r"unknown column ['\"]?([\w\.]+)['\"]?"),
+        ("syntax", r'syntax error at or near ["`]?([\w\.]+)["`]?'),
+    ]
+    for kind, pattern in patterns:
+        m = re.search(pattern, err, re.I)
+        if m:
+            return kind, m.group(1).split(".")[-1]
+    return None, None
+
+
+def _build_repair_schema_context(
+    message: str,
+    sql: str,
+    err_str: str,
+    all_tables: list,
+    retrieval_table_names: list[str],
+    hints_by_table: dict[str, dict],
+) -> tuple[str, list[str]]:
+    from app.services.schema_compressor import compress_tables_for_prompt
+
+    kind, identifier = _extract_db_error_identifier(err_str)
+    refs = _extract_sql_table_refs(sql)
+    wanted_names: set[str] = set(refs)
+    column_map = {
+        t.table_name: {c.name.lower(): c.name for c in t.columns}
+        for t in all_tables
+    }
+
+    if identifier:
+        ident_lower = identifier.lower()
+        if kind == "column":
+            for t in all_tables:
+                cols_lower = set(column_map.get(t.table_name, {}).keys())
+                if ident_lower in cols_lower:
+                    wanted_names.add(t.table_name)
+                    continue
+                if get_close_matches(ident_lower, list(cols_lower), n=1, cutoff=0.72):
+                    wanted_names.add(t.table_name)
+        elif kind == "table":
+            for t in all_tables:
+                if t.table_name.lower() == ident_lower:
+                    wanted_names.add(t.table_name)
+            for close in get_close_matches(ident_lower, [t.table_name for t in all_tables], n=4, cutoff=0.55):
+                wanted_names.add(close)
+
+    wanted_names.update(retrieval_table_names[:8])
+    selected = [t for t in all_tables if t.table_name in wanted_names]
+    if not selected:
+        selected = [t for t in all_tables if t.table_name in retrieval_table_names[:12]]
+    if not selected:
+        selected = all_tables[:12]
+
+    repair_query = f"{message}\nSQL: {sql}\nDatabase error: {err_str}"
+    context, _ = compress_tables_for_prompt(
+        repair_query,
+        selected,
+        max_lines=24,
+        max_estimated_tokens=1400,
+        estimate_tokens=_estimate_tokens,
+        hints_by_table=hints_by_table,
+    )
+    return context, [t.table_name for t in selected]
 
 
 def _get_full_schema_context(db_config: dict) -> str:
@@ -635,6 +721,7 @@ async def process_chat_v2(request) -> dict:
     planner_source = ""
     retrieval_table_names: list[str] = []
     all_tables_for_validation: Optional[list] = None
+    hints_by_table: dict[str, dict] = {}
     schema_fp = ""
     cache_schema_token = "none:none"
 
@@ -876,12 +963,14 @@ async def process_chat_v2(request) -> dict:
         "planner_source": planner_source or None,
         "cache_hit": cache_hit,
         "retrieval_tables": retrieval_table_names or None,
+        "sql_repaired": False,
     }
 
     # ── 4. Execute ───────────────────────────────────────────────
     data:    list = []
     columns: list = []
     used_real_db  = False
+    repaired_sql = False
 
     if db_config:
         try:
@@ -908,8 +997,84 @@ async def process_chat_v2(request) -> dict:
         except Exception as e:
             logger.error(f"[chat_v2] Query execution error: {e}")
             err_str = str(e)
+            if _is_sql_repairable_error(err_str) and db_id and all_tables_for_validation:
+                tried_sqls = {sql}
+                repair_error = err_str
+                for repair_attempt in range(2):
+                    repair_schema_context, repair_tables = _build_repair_schema_context(
+                        message,
+                        sql or "",
+                        repair_error,
+                        all_tables_for_validation,
+                        retrieval_table_names,
+                        hints_by_table,
+                    )
+                    prompt_tokens = query_tokens + _estimate_tokens(repair_schema_context) + 320
+                    candidate_sql = repair_sql_with_llm(
+                        query=message,
+                        broken_sql=sql or "",
+                        error_message=repair_error,
+                        schema_context=repair_schema_context,
+                        db_type=db_type,
+                        db_id=db_id,
+                    )
+                    if not candidate_sql or candidate_sql in tried_sqls:
+                        continue
+                    if table_columns:
+                        fixed_sql, changed = _fix_unknown_columns(candidate_sql, table_columns)
+                        if changed:
+                            candidate_sql = fixed_sql
+                    if allowed_table_names:
+                        ok, bad = _validate_sql_tables(candidate_sql, allowed_table_names)
+                        if not ok:
+                            logger.warning("[chat_v2] Repaired SQL still referenced invalid tables %s", bad)
+                            tried_sqls.add(candidate_sql)
+                            repair_error = f"{repair_error}; invalid tables: {sorted(bad)}"
+                            continue
+                    try:
+                        logger.info(
+                            "[chat_v2] Retrying repaired SQL (attempt %s) with tables=%s",
+                            repair_attempt + 1,
+                            repair_tables,
+                        )
+                        result = execute_query(
+                            db_type=DatabaseType(db_config["type"]),
+                            host=db_config["host"],
+                            port=db_config["port"],
+                            username=db_config["username"],
+                            password=db_config["password"],
+                            database=db_config["database"],
+                            sql=candidate_sql,
+                        )
+                        sql = candidate_sql
+                        data = result.rows
+                        columns = result.columns
+                        used_real_db = True
+                        repaired_sql = True
+                        _tu_extra["sql_repaired"] = True
+                        logger.info("[chat_v2] SQL repair succeeded on attempt %s", repair_attempt + 1)
+                        if not cache_hit and schema_fp and db_id and not frontend_schema:
+                            try:
+                                set_cached_sql(db_id, message, cache_schema_token, sql, filters or None)
+                            except Exception as ce:
+                                logger.debug(f"[chat_v2] cache save skipped: {ce}")
+                        break
+                    except Exception as repair_exc:
+                        tried_sqls.add(candidate_sql)
+                        repair_error = str(repair_exc)
+                        logger.warning(
+                            "[chat_v2] SQL repair attempt %s failed: %s",
+                            repair_attempt + 1,
+                            repair_error,
+                        )
+                if used_real_db:
+                    pass
+                else:
+                    err_str = repair_error
             # Give user a helpful message based on error type
-            if "column" in err_str.lower() or "relation" in err_str.lower() or "does not exist" in err_str.lower():
+            if used_real_db:
+                logger.info("[chat_v2] Continuing after repaired SQL execution")
+            elif "column" in err_str.lower() or "relation" in err_str.lower() or "does not exist" in err_str.lower():
                 friendly = (
                     f"The query referenced a column or table that doesn't exist.\n\n"
                     f"**Error:** `{err_str}`\n\n"
@@ -920,28 +1085,29 @@ async def process_chat_v2(request) -> dict:
                     f"There was a SQL syntax error.\n\n**Error:** `{err_str}`\n\n"
                     "Try a simpler request first."
                 )
-            else:
+            elif not used_real_db:
                 friendly = f"Query failed: {err_str}"
-            return {
-                "type":    "error",
-                "message": friendly,
-                "suggestions": [
-                    "Show top 10 products by name",
-                    "Monthly order count",
-                    "Revenue by category",
-                ],
-                "intent": intent.value,
-                "sql":    sql,
-                "token_usage": {
-                    "query_tokens": query_tokens,
-                    "schema_tokens": _estimate_tokens(schema_context),
-                    "prompt_tokens": prompt_tokens,
-                    "sql_tokens": _estimate_tokens(sql),
-                    "total_estimated_tokens": prompt_tokens + _estimate_tokens(sql),
-                    "budget_tokens": token_budget,
-                    **_tu_extra,
-                },
-            }
+            if not used_real_db:
+                return {
+                    "type":    "error",
+                    "message": friendly,
+                    "suggestions": [
+                        "Show top 10 products by name",
+                        "Monthly order count",
+                        "Revenue by category",
+                    ],
+                    "intent": intent.value,
+                    "sql":    sql,
+                    "token_usage": {
+                        "query_tokens": query_tokens,
+                        "schema_tokens": _estimate_tokens(schema_context),
+                        "prompt_tokens": prompt_tokens,
+                        "sql_tokens": _estimate_tokens(sql),
+                        "total_estimated_tokens": prompt_tokens + _estimate_tokens(sql),
+                        "budget_tokens": token_budget,
+                        **_tu_extra,
+                    },
+                }
     else:
         data, columns = _generate_demo_data(message, hints)
 
@@ -978,6 +1144,8 @@ async def process_chat_v2(request) -> dict:
     x_key, y_keys = select_keys(columns, chart_type)
 
     suffix = "" if used_real_db else " (demo data)"
+    if repaired_sql:
+        suffix += " after auto-fixing the SQL"
     return {
         "type":    "chart",
         "message": (

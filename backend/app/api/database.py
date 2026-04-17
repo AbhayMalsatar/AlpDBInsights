@@ -247,9 +247,13 @@ async def put_table_hints(db_id: str, body: TableHintsPutBody):
             logger.warning(f"Vector reindex after hints failed: {e}")
 
     auto_fine_tune = refresh_fine_tune_state(db_id, force=False)
+    selected_tables = set((cfg.get("selected_tables") or []))
+    fine_tune_tables = sorted(name for name in touched if not selected_tables or name in selected_tables)
     try:
-        if touched and auto_fine_tune.get("enabled"):
-            auto_fine_tune = start_fine_tune(db_id, table_names=sorted(touched), auto=True)
+        if fine_tune_tables and auto_fine_tune.get("enabled"):
+            auto_fine_tune = start_fine_tune(db_id, table_names=fine_tune_tables, auto=True)
+        elif touched and selected_tables and not fine_tune_tables:
+            auto_fine_tune["message"] = "Saved hints, but auto fine-tune was skipped because these tables are not in the selected table set."
         elif touched and not auto_fine_tune.get("enabled"):
             auto_fine_tune["message"] = "Auto fine-tune is unavailable until OpenAI provider and API key are configured."
     except Exception as e:

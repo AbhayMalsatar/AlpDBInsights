@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 _FINE_TUNE_DIR = Path(__file__).parent.parent.parent / "fine_tuning_data"
 _RUNNING_STATUSES = {"validating_files", "queued", "running"}
+_AUDIT_COLUMNS = {"addby", "editby", "adddate", "editdate"}
 
 
 def utc_now_iso() -> str:
@@ -35,6 +36,10 @@ def _quote_ident(name: str) -> str:
     return re.sub(r"[^\w]", "", name or "")
 
 
+def _is_audit_column(name: str) -> bool:
+    return (name or "").strip().lower() in _AUDIT_COLUMNS
+
+
 def _sql_limit(limit: int, db_type: str) -> tuple[str, str]:
     if db_type == "mssql":
         return f"TOP {limit} ", ""
@@ -44,6 +49,8 @@ def _sql_limit(limit: int, db_type: str) -> tuple[str, str]:
 def _fmt_schema_block(table: Any, hint: Optional[dict[str, Any]]) -> str:
     lines = [f"Table: {table.table_name}", "Columns:"]
     for col in table.columns[:80]:
+        if _is_audit_column(col.name):
+            continue
         flags: list[str] = []
         if getattr(col, "primary_key", False):
             flags.append("PRIMARY KEY")
@@ -91,6 +98,8 @@ def _first_matching_column(table: Any, patterns: tuple[str, ...], kinds: tuple[s
 
 def _first_dimension_column(table: Any) -> Optional[str]:
     for col in table.columns:
+        if _is_audit_column(col.name):
+            continue
         dtype = (col.data_type or "").lower()
         name = col.name.lower()
         if getattr(col, "primary_key", False):
@@ -104,6 +113,8 @@ def _first_dimension_column(table: Any) -> Optional[str]:
 
 def _first_metric_column(table: Any) -> Optional[str]:
     for col in table.columns:
+        if _is_audit_column(col.name):
+            continue
         dtype = (col.data_type or "").lower()
         name = col.name.lower()
         if getattr(col, "primary_key", False):
@@ -117,6 +128,8 @@ def _first_metric_column(table: Any) -> Optional[str]:
 
 def _first_date_column(table: Any) -> Optional[str]:
     for col in table.columns:
+        if _is_audit_column(col.name):
+            continue
         dtype = (col.data_type or "").lower()
         name = col.name.lower()
         if any(token in dtype for token in ("date", "time")):
@@ -163,11 +176,18 @@ def _training_example(schema_block: str, task: str, sql: str) -> dict[str, Any]:
 def build_training_examples(db_id: str, table_names: Optional[list[str]] = None) -> tuple[list[dict[str, Any]], list[str]]:
     tables = load_schema_snapshot(db_id) or []
     hints_by_table = load_hints_by_table(db_id)
-    wanted = set(table_names or [])
-    selected = [t for t in tables if not wanted or t.table_name in wanted]
     registry, _ = _registry_refs()
     db_config = registry.get(db_id) or {}
+    selected_tables = db_config.get("selected_tables")
+    if table_names is None:
+        wanted = set(selected_tables or [])
+    else:
+        wanted = set(table_names)
     db_type = db_config.get("type", "postgresql")
+    if table_names is None and selected_tables == []:
+        selected = []
+    else:
+        selected = [t for t in tables if not wanted or t.table_name in wanted]
 
     examples: list[dict[str, Any]] = []
     used_tables: list[str] = []
@@ -426,6 +446,11 @@ def start_fine_tune(db_id: str, table_names: Optional[list[str]] = None, auto: b
     if state.get("status") in _RUNNING_STATUSES:
         state["message"] = "A fine-tuning job is already running for this database."
         return state
+
+    db_config = registry.get(db_id) or {}
+    selected_tables = db_config.get("selected_tables")
+    if table_names is None and selected_tables == []:
+        raise ValueError("Select tables first. Fine-tuning only runs on the tables you selected on the Databases page.")
 
     examples, used_tables = build_training_examples(db_id, table_names=table_names)
     if len(examples) < 10:
